@@ -62,20 +62,20 @@ public class Main {
             return;
         }
 
-        var action = _commandMethods.First().Value;
-        action.Invoke();
-        // var currentDoc = Application.DocumentManager.MdiActiveDocument;
-        // var ed = currentDoc.Editor;
-        // var pKeyOpts = new PromptKeywordOptions("\n请选择要执行的函数") { AllowNone = true };
-        // var index = 1;
-        // foreach (var commandMethod in _commandMethods) {
-        //     pKeyOpts.Keywords.Add(commandMethod.Key, index.ToString(), commandMethod.Key + "("+ index +")");
-        //     index++;
-        // }
-        //
-        // var pKeyRes = ed.GetKeywords(pKeyOpts);
-        // if (_commandMethods.TryGetValue(pKeyRes.StringResult, out var method)) {
-        //     method.Invoke();
-        // }
+        // var action = _commandMethods.First().Value;
+        // action.Invoke();
+        var currentDoc = Application.DocumentManager.MdiActiveDocument;
+        var ed = currentDoc.Editor;
+        var pKeyOpts = new PromptKeywordOptions("\n请选择要执行的函数") { AllowNone = true };
+        var index = 1;
+        foreach (var commandMethod in _commandMethods) {
+            pKeyOpts.Keywords.Add(commandMethod.Key, index.ToString(), commandMethod.Key + "("+ index +")");
+            index++;
+        }
+        
+        var pKeyRes = ed.GetKeywords(pKeyOpts);
+        if (_commandMethods.TryGetValue(pKeyRes.StringResult, out var method)) {
+            method.Invoke();
+        }
     }
 }
