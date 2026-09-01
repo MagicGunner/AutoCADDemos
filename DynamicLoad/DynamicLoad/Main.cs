@@ -1,81 +1,143 @@
-﻿using System.IO;
-using System.Reflection;
+﻿using System.Reflection;
+using System.Windows.Forms;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Runtime;
 using Application = Autodesk.AutoCAD.ApplicationServices.Core.Application;
+using Exception = System.Exception;
+
 
 [assembly: CommandClass(typeof(DynamicLoad.Main))]
 
 namespace DynamicLoad;
 
-public class Main {
-    private Dictionary<string, Action> _commandMethods = new ();
+public sealed class Main {
+    private readonly static Dictionary<string, Action> CommandMethods = new();
+    private static string? _targetFilePath;
+    private static bool _resolverRegistered;
 
-    private string? _targetFilePath;
+    [CommandMethod("ATDLL")]
+    public void SelectDll() {
+        using var dialog = new OpenFileDialog();
 
-    public Main() {
-        InitDllPath();
+        dialog.Filter = "DLL files (*.dll)|*.dll";
+        dialog.FilterIndex = 1;
+        dialog.Multiselect = false;
+
+        if (dialog.ShowDialog() != DialogResult.OK)
+            return;
+
+        _targetFilePath = dialog.FileName;
+        EnsureAssemblyResolver();
     }
 
-    /// <summary>
-    /// 获取当前二次开发生存的DLL完整路径
-    /// </summary>
-    [CommandMethod(nameof(InitDllPath))]
-    public void InitDllPath() {
-        var openFileDialog = new OpenFileDialog();
-        openFileDialog.Filter = "DLL files (*.dll)|*.dll";
-        openFileDialog.FilterIndex = 1;
-        openFileDialog.Multiselect = false;
+    [CommandMethod("ATLOAD")]
+    public void Load() {
+        var editor = Application.DocumentManager.MdiActiveDocument.Editor;
 
-        if (openFileDialog.ShowDialog() != DialogResult.OK) return;
-        // 获取所选文件的完整路径
-        _targetFilePath = openFileDialog.FileName;
-    }
+        if (string.IsNullOrWhiteSpace(_targetFilePath) || !File.Exists(_targetFilePath)) {
+            editor.WriteMessage("\nDLL 路径无效，请先执行 ATDLL。");
 
-    /// <summary>
-    /// 动态加载DLL
-    /// </summary>
-    [CommandMethod(nameof(DLoad))]
-    public void DLoad() {
-        if (!File.Exists(_targetFilePath)) {
-            Application.ShowAlertDialog("当前DLL路径为空或非法，请输入指令InitDllPath重新加载您的DLL");
             return;
         }
-        _commandMethods = new Dictionary<string, Action>();
-        var targetAssembly = Assembly.Load(File.ReadAllBytes(_targetFilePath));
-        var customAttributes = targetAssembly.GetCustomAttributes(typeof(CommandClassAttribute), false);
-        foreach (var customAttribute in customAttributes) {
-            var commandClassAttr = customAttribute as CommandClassAttribute;
-            var targetType = commandClassAttr!.Type;
-            var targetObj = Activator.CreateInstance(targetType);
-            var methodInfos = targetType.GetMethods().Where(methodInfo => methodInfo.DeclaringType == targetType);
-            foreach (var methodInfo in methodInfos) {
-                _commandMethods[targetType + "." + methodInfo.Name] = () => methodInfo.Invoke(targetObj, null);
+
+        try {
+            CommandMethods.Clear();
+
+            var bytes = File.ReadAllBytes(_targetFilePath);
+
+            var assembly = Assembly.Load(bytes);
+
+            LoadCommands(assembly);
+
+            editor.WriteMessage($"\n动态加载成功，共发现 {CommandMethods.Count} 个命令。");
+        } catch (Exception ex) {
+            editor.WriteMessage($"\n动态加载失败：\n{ex}");
+        }
+    }
+
+    [CommandMethod("ATRUN")]
+    public void Run() {
+        var editor = Application.DocumentManager.MdiActiveDocument.Editor;
+
+        if (CommandMethods.Count == 0) {
+            editor.WriteMessage("\n没有可执行命令，请先执行 ATLOAD。");
+
+            return;
+        }
+
+        var options = new PromptKeywordOptions("\n请选择要执行的命令") {
+                                                                  AllowNone = true
+                                                              };
+
+        var index = 1;
+
+        foreach (var command in CommandMethods) {
+            options.Keywords.Add(command.Key, index.ToString(), $"{command.Key} ({index})");
+
+            index++;
+        }
+
+        var result = editor.GetKeywords(options);
+
+        if (result.Status != PromptStatus.OK)
+            return;
+
+        if (CommandMethods.TryGetValue(result.StringResult, out var action)) {
+            try {
+                action();
+            } catch (Exception ex) {
+                editor.WriteMessage($"\n命令执行失败：\n{ex}");
             }
         }
     }
 
-    [CommandMethod(nameof(Run))]
-    public void Run() {
-        if (_commandMethods.Count == 0) {
-            Application.ShowAlertDialog("当前未加载任何可执行的函数，请先执行LoadDll加载您的DLL");
-            return;
-        }
+    private static void LoadCommands(Assembly assembly) {
+        var commandClasses = assembly.GetCustomAttributes<CommandClassAttribute>();
 
-        // var action = _commandMethods.First().Value;
-        // action.Invoke();
-        var currentDoc = Application.DocumentManager.MdiActiveDocument;
-        var ed = currentDoc.Editor;
-        var pKeyOpts = new PromptKeywordOptions("\n请选择要执行的函数") { AllowNone = true };
-        var index = 1;
-        foreach (var commandMethod in _commandMethods) {
-            pKeyOpts.Keywords.Add(commandMethod.Key, index.ToString(), commandMethod.Key + "("+ index +")");
-            index++;
+        foreach (var commandClass in commandClasses) {
+            var type = commandClass.Type;
+
+            object? instance = null;
+
+            var methods = type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static).Where(m => m.GetCustomAttribute<CommandMethodAttribute>() != null);
+
+            foreach (var method in methods) {
+                if (method.GetParameters().Length != 0)
+                    continue;
+
+                var attribute = method.GetCustomAttribute<CommandMethodAttribute>()!;
+
+                var commandName = attribute.GlobalName;
+
+                if (!method.IsStatic)
+                    instance ??= Activator.CreateInstance(type);
+
+                CommandMethods[commandName] = () => method.Invoke(method.IsStatic ? null : instance, null);
+            }
         }
-        
-        var pKeyRes = ed.GetKeywords(pKeyOpts);
-        if (_commandMethods.TryGetValue(pKeyRes.StringResult, out var method)) {
-            method.Invoke();
-        }
+    }
+
+    private static void EnsureAssemblyResolver() {
+        if (_resolverRegistered)
+            return;
+
+        AppDomain.CurrentDomain.AssemblyResolve += ResolveAssembly;
+
+        _resolverRegistered = true;
+    }
+
+    private static Assembly? ResolveAssembly(object sender, ResolveEventArgs args) {
+        if (string.IsNullOrWhiteSpace(_targetFilePath))
+            return null;
+
+        var directory = Path.GetDirectoryName(_targetFilePath);
+
+        if (directory == null) return null;
+
+        var name = new AssemblyName(args.Name).Name;
+
+        var path = Path.Combine(directory, name + ".dll");
+
+        return !File.Exists(path) ? null : Assembly.Load(File.ReadAllBytes(path));
     }
 }

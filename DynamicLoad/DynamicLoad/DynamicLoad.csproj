@@ -1,22 +1,17 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>net8.0-windows</TargetFramework>
-        <LangVersion>preview</LangVersion>
+        <TargetFramework>net48</TargetFramework>
+        <LangVersion>latest</LangVersion>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
-        <UseWindowsForms>true</UseWindowsForms>
-        <UseWpf>true</UseWpf>
     </PropertyGroup>
 
     <ItemGroup>
-      <PackageReference Include="AutoCAD.NET" Version="25.0.1" />
+        <PackageReference Include="AutoCAD.NET" Version="24.3.0"/>
     </ItemGroup>
 
     <ItemGroup>
-      <Reference Include="PresentationFramework">
-        <HintPath>C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App\8.0.5\PresentationFramework.dll</HintPath>
-      </Reference>
+        <Reference Include="System.Windows.Forms" />
     </ItemGroup>
-
 </Project>
